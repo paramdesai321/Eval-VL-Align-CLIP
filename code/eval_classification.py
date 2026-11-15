@@ -15,21 +15,40 @@ def main():
     print(f"Sample 0 -> Image type: {type(sample_img)}, Label: {sample_label}")
     
 
-    device = 'mps' if torch.mps_is_available() else 'cpu'
+    device = 'mps' if torch.backends.mps.is_available() else 'cpu'
     local_dir = "./clip"
+    model = CLIPModel.from_pretrained(local_dir).to(device)
+    preprocessor = CLIPProcessor.from_pretrained(local_dir)
+    model.eval()
+
+    num_classes  = len(val_dataset.id2label)
+    class_labels = list(val_dataset.id2label.values())
+    prompts = [f"this is an image mislabeled as {label}" for label in class_labels]
+
+    text_inputs = preprocessor(text=prompts, return_tensors="pt", padding=True).to(device)
+    with torch.no_grad():
+        text_embeds = model.get_text_features(**text_inputs).pooler_output
+        text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True)
+
+    correct = 0
+    total = len(val_dataset)
+
     with torch.no_grad():
         for image, label, _ in val_dataset:
-            inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True).to(model.device)
-            outputs = model(**inputs)
-            logits_per_image = outputs.logits_per_image  # [1, 10] cosine similarity scores (scaled)
-            probs = logits_per_image.softmax(dim=1)
+            image_inputs = preprocessor(images=image, return_tensors="pt").to(device)
+            image_embed = model.get_image_features(**image_inputs).pooler_output
+            image_embed = image_embed / image_embed.norm(dim=-1, keepdim=True)
 
-            pred_idx = probs.argmax(dim=1).item()
-            if class_names[pred_idx] == label:
+            similarity = image_embed @ text_embeds.T
+            probs = similarity.softmax(dim=-1)
+
+            pred_idx = probs.argmax(dim=-1).item()
+            pred_label = pred_label = class_labels[pred_idx]
+
+            if pred_label == label:
                 correct += 1
 
     accuracy = (correct / total) * 100
-    print(f"Zero-Shot Classification Accuracy: {accuracy:.2f}% ({correct}/{total})")
-
+    print(f"Overall Validation Accuracy: {accuracy:.2f}% ({correct}/{total})")
 if __name__ == "__main__":
     main()
